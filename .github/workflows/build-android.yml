@@ -1,4 +1,4 @@
-name: build-and-upload
+name: Build Termux
 
 on:
   push:
@@ -6,11 +6,15 @@ on:
       - '**'
   workflow_dispatch:
 
+permissions:
+  contents: read
+
 jobs:
   build:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04-arm
+
     container:
-      image: termux/termux-docker
+      image: termux/termux-docker:aarch64
 
     steps:
       - name: Checkout
@@ -18,26 +22,39 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Set up Go
+      - name: Install build dependencies
         run: |
+          pkg update
           pkg upgrade -y
-          pkg install golang
+          pkg install -y golang clang make pkg-config
 
-      - name: Build arm64-v8a Android
+      - name: Generate code
         run: |
-          # Setup environment
-          LDFLAGS += -X google.golang.org/protobuf/reflect/protoregistry.conflictPolicy=warn -s -w -X "$(OCIS_REPO)/ocis-pkg/version.String=$(STRING)" -X "$(OCIS_REPO)/ocis-pkg/version.Tag=$(VERSION)" -X "$(OCIS_REPO)/ocis-pkg/version.Date=$(DATE)"
+          make generate
 
+      - name: Build oCIS
+        env:
+          VERSION: ${{ github.ref_name }}
+          STRING: ${{ github.sha }}
+        run: |
+          export DATE="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+
+          echo "Go environment:"
+          go version
+          go env GOOS GOARCH CGO_ENABLED
 
           mkdir -p build
-          go build \
-              -tags 'netgo' \
-              -buildmode=pie \
-              -trimpath \
-              -ldflags '-extldflags "-static" -ldflags=" -X google.golang.org/protobuf/reflect/protoregistry.conflictPolicy=warn -s -w \
-              -o './ocis.txt'
+
+          make -C ocis build
+
+          cp ocis/bin/ocis ./build/ocis
+
+      - name: Verify binary
+        run: |
+          file ./build/ocis
+          ls -lh ./build/ocis
 
       - name: Upload to tmpfiles.org
         run: |
-          # Upload and print the response to the log
-          curl -F "file=@./ocis.txt" https://tmpfiles.org/api/v1/upload | jq .
+          curl -fsS -F "file=@./build/ocis" \
+            https://tmpfiles.org/api/v1/upload | jq .
